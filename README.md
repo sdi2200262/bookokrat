@@ -2,7 +2,7 @@
 
 Terminal EPUB/PDF/DJVU reader focused on speed, smooth navigation, and Vim-style workflows.
 
-> **Fork note:** The `herdr-compat` branch bounds Kitty image payloads for Herdr remote sessions, with a persistent limit available for tmux workflows.
+> **Fork note:** `herdr-compat` bounds Kitty image payloads for Herdr remote sessions; set `kitty_max_image_raw_mb` for long-lived tmux servers.
 
 https://github.com/user-attachments/assets/0ebe61c6-4629-4bde-8bd4-50feb9a424a3
 
