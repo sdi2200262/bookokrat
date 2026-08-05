@@ -146,6 +146,11 @@ pub struct Settings {
     #[serde(default)]
     pub pdf_show_link_underlines: bool,
 
+    /// Optional raw Kitty image budget in MiB. This is useful when an
+    /// intermediary terminal multiplexer has a bounded graphics frame size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kitty_max_image_raw_mb: Option<u32>,
+
     #[serde(default = "default_true")]
     pub pdf_enabled: bool,
 
@@ -216,6 +221,7 @@ impl Default for Settings {
             pdf_pan_shift: 0,
             pdf_render_mode: PdfRenderMode::default(),
             pdf_show_link_underlines: false,
+            kitty_max_image_raw_mb: None,
             pdf_enabled: true,
             pdf_page_layout_mode: PdfPageLayoutMode::default(),
             epub_column_mode: EpubColumnMode::default(),
@@ -827,6 +833,13 @@ pub fn get_pdf_scale() -> f32 {
         .read()
         .map(|s| s.pdf_scale)
         .unwrap_or_else(|_| default_pdf_scale())
+}
+
+pub fn get_kitty_max_image_raw_mb() -> Option<u32> {
+    SETTINGS
+        .read()
+        .ok()
+        .and_then(|settings| settings.kitty_max_image_raw_mb)
 }
 
 pub fn set_pdf_scale(scale: f32) {

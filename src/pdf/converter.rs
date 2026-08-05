@@ -34,6 +34,12 @@ use super::types::{
 
 type PipelineError = super::request::WorkerFault;
 
+/// Herdr currently allows 32 MiB graphics frames. Raw pixels grow by roughly
+/// 4/3 when Herdr retransmits them as base64 Kitty data, with a little extra
+/// framing overhead. A 20 MiB raw budget leaves enough headroom for the rest
+/// of the terminal frame.
+const HERDR_KITTY_RAW_IMAGE_LIMIT_MB: u32 = 20;
+
 fn pipeline_error(msg: impl Into<String>) -> PipelineError {
     PipelineError::generic(msg)
 }
@@ -2172,6 +2178,47 @@ fn next_shm_name(pid: u32, page_num: usize) -> String {
     format!("/bookokrat_{unique}-{pid}-page-{page_num}")
 }
 
+fn kitty_raw_image_limit_bytes() -> Option<u64> {
+    match crate::settings::get_kitty_max_image_raw_mb() {
+        Some(0) => None,
+        Some(limit_mb) => Some(u64::from(limit_mb) * 1024 * 1024),
+        None if std::env::var("HERDR_ENV").ok().as_deref() == Some("1") => {
+            Some(u64::from(HERDR_KITTY_RAW_IMAGE_LIMIT_MB) * 1024 * 1024)
+        }
+        None => None,
+    }
+}
+
+fn cap_kitty_image_raw_bytes(img: DynamicImage, max_raw_bytes: u64) -> DynamicImage {
+    let bytes_per_pixel = if matches!(img, DynamicImage::ImageRgba8(_)) {
+        4_u64
+    } else {
+        3_u64
+    };
+    let current_pixels = u64::from(img.width()).saturating_mul(u64::from(img.height()));
+    let max_pixels = (max_raw_bytes / bytes_per_pixel).max(1);
+    if current_pixels <= max_pixels {
+        return img;
+    }
+
+    let scale = (max_pixels as f64 / current_pixels as f64).sqrt();
+    let target_width = ((f64::from(img.width()) * scale).floor() as u32).max(1);
+    let target_height = ((f64::from(img.height()) * scale).floor() as u32).max(1);
+    log::debug!(
+        "Capping Kitty image for bounded transport: {}x{} -> {}x{} (raw limit {} MiB)",
+        img.width(),
+        img.height(),
+        target_width,
+        target_height,
+        max_raw_bytes / (1024 * 1024),
+    );
+    img.resize_exact(
+        target_width,
+        target_height,
+        image::imageops::FilterType::Lanczos3,
+    )
+}
+
 fn encode_protocol(
     img: DynamicImage,
     cell_size: CellSize,
@@ -2182,6 +2229,10 @@ fn encode_protocol(
 ) -> Result<ConvertedImage, PipelineError> {
     match picker.protocol_type() {
         ProtocolType::Kitty => {
+            let img = match kitty_raw_image_limit_bytes() {
+                Some(limit) => cap_kitty_image_raw_bytes(img, limit),
+                None => img,
+            };
             let is_rgba = matches!(img, DynamicImage::ImageRgba8(_));
             let (data, width, height) = if is_rgba {
                 // Already straight alpha: the worker unpremultiplies right after
@@ -2781,6 +2832,29 @@ mod tests {
     fn decode_pixels_rejects_size_mismatch() {
         // 4-channel decode needs width*height*4 bytes; give it RGB-sized data.
         assert!(decode_pixels(&[0; 6], 2, 1, 4).is_err());
+    }
+
+    #[test]
+    fn kitty_transport_cap_downscales_rgb_to_raw_budget() {
+        let img = DynamicImage::ImageRgb8(RgbImage::new(20, 10));
+        let capped = cap_kitty_image_raw_bytes(img, 150);
+        assert_eq!((capped.width(), capped.height()), (10, 5));
+        assert!(matches!(capped, DynamicImage::ImageRgb8(_)));
+    }
+
+    #[test]
+    fn kitty_transport_cap_accounts_for_rgba_and_preserves_alpha() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::new(20, 10));
+        let capped = cap_kitty_image_raw_bytes(img, 200);
+        assert_eq!((capped.width(), capped.height()), (10, 5));
+        assert!(matches!(capped, DynamicImage::ImageRgba8(_)));
+    }
+
+    #[test]
+    fn kitty_transport_cap_leaves_images_within_budget_unchanged() {
+        let img = DynamicImage::ImageRgb8(RgbImage::new(10, 5));
+        let capped = cap_kitty_image_raw_bytes(img, 150);
+        assert_eq!((capped.width(), capped.height()), (10, 5));
     }
 
     fn link(x0: u32, y0: u32, x1: u32, y1: u32) -> LinkRect {
